@@ -126,6 +126,24 @@ def post_trade_to_os(transcription: str, message_id: int | None = None) -> dict:
             },
             timeout=30,
         )
+        # Don't blindly resp.json() — if Vercel returns an HTML error page
+        # (auth redirect, 404, 5xx), json() raises a cryptic "Expecting
+        # value: line 1 column 1" that hides the real cause. Detect HTML and
+        # surface the actual status to Telegram + the logs.
+        ct = resp.headers.get("content-type", "")
+        if "application/json" not in ct.lower():
+            preview = resp.text[:120].replace("\n", " ")
+            logger.error(
+                f"log-trade non-JSON response: status={resp.status_code} "
+                f"content-type={ct!r} body[:120]={preview!r}"
+            )
+            return {
+                "ok": False,
+                "message": (
+                    f"Trading OS returned {resp.status_code} (not JSON). "
+                    "Endpoint may be unauthenticated or undeployed."
+                ),
+            }
         return resp.json()
     except Exception as e:
         logger.error(f"log-trade POST failed: {e}")
