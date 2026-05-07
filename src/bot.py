@@ -20,6 +20,15 @@ TELEGRAM_CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
 ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"]
 OPENAI_API_KEY = os.environ["OPENAI_API_KEY"]
 
+# Voice-trade-logging integration with Trading OS
+# (Sprint 5 D7 — May 6 2026). Both env vars set on Coolify side; the
+# webhook secret must match the value set on Vercel for /api/voice/log-trade.
+JARVIS_WEBHOOK_SECRET = os.environ.get("JARVIS_WEBHOOK_SECRET", "")
+JARVIS_CLERK_USER_ID = os.environ.get("JARVIS_CLERK_USER_ID", "")
+TRADING_OS_API = os.environ.get(
+    "TRADING_OS_API", "https://usetradingos.com/api/voice/log-trade"
+)
+
 anthropic_client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 openai_client = OpenAI(api_key=OPENAI_API_KEY)
 
@@ -54,6 +63,72 @@ def ask_claude(text: str) -> str:
     return response.content[0].text
 
 
+# Trade-logging keyword detector. Heuristic — if 2+ trade-language tokens
+# are present, we route to /api/voice/log-trade. Otherwise plain Q&A.
+# Misses are fine: user can prefix with "log trade" to force the route.
+_TRADE_KEYWORDS = {
+    "long", "short", "entry", "in at", "out at", "stop", "stopped",
+    "tp1", "tp2", "tp 1", "tp 2", "target", "took profit", "taking profit",
+    "trade", "trailed", "breakeven", "be ", "took the loss", "scaled",
+    "contracts", "contract", "mes", "es", "nq", "mnq", "gold", "silver",
+    "mgc", "gc", "sil", "si", "long position", "short position",
+}
+
+
+def looks_like_trade(text: str) -> bool:
+    if not text:
+        return False
+    lowered = " " + text.lower() + " "
+    if lowered.startswith(" /log") or " log trade " in lowered:
+        return True
+    hits = sum(1 for kw in _TRADE_KEYWORDS if kw in lowered)
+    return hits >= 2
+
+
+def post_trade_to_os(transcription: str, message_id: int | None = None) -> dict:
+    """POST a transcription to Trading OS /api/voice/log-trade.
+
+    Returns the response dict. On HTTP error or missing config, returns
+    {"ok": False, "message": "..."} so the caller can render to Telegram.
+    """
+    if not JARVIS_WEBHOOK_SECRET or not JARVIS_CLERK_USER_ID:
+        return {
+            "ok": False,
+            "message": (
+                "Voice trade logging not configured yet. Add "
+                "JARVIS_WEBHOOK_SECRET + JARVIS_CLERK_USER_ID to Coolify."
+            ),
+        }
+    try:
+        resp = http_requests.post(
+            TRADING_OS_API,
+            json={
+                "secret": JARVIS_WEBHOOK_SECRET,
+                "user_id": JARVIS_CLERK_USER_ID,
+                "transcription": transcription,
+                "telegram_message_id": message_id,
+            },
+            timeout=30,
+        )
+        return resp.json()
+    except Exception as e:
+        logger.error(f"log-trade POST failed: {e}")
+        return {"ok": False, "message": f"Couldn't reach Trading OS: {e}"}
+
+
+def format_trade_reply(api_result: dict, transcription: str) -> str:
+    """Build Telegram reply from /api/voice/log-trade response."""
+    if api_result.get("ok"):
+        summary = api_result.get("summary", "Trade logged.")
+        url = api_result.get("detail_url", "")
+        return f"🎙 _{transcription}_\n\n{summary}\n{url}".strip()
+    msg = api_result.get("message", "Couldn't log the trade.")
+    missing = api_result.get("missing")
+    if missing:
+        return f"🎙 _{transcription}_\n\n{msg}"
+    return f"🎙 _{transcription}_\n\n{msg}"
+
+
 @flask_app.route("/webhook", methods=["POST"])
 def tradingview_webhook():
     data = request.get_json(silent=True) or {}
@@ -86,12 +161,29 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Text message handler. Routes to trade-log if the text looks like
+    a trade, otherwise falls back to plain Claude Q&A."""
     await update.message.reply_chat_action("typing")
-    reply = ask_claude(update.message.text)
+    text = update.message.text or ""
+
+    if looks_like_trade(text):
+        # Strip leading /log if present
+        clean = text
+        if clean.lower().startswith("/log"):
+            clean = clean[4:].strip()
+        result = post_trade_to_os(clean, message_id=update.message.message_id)
+        await update.message.reply_text(
+            format_trade_reply(result, clean), parse_mode="Markdown"
+        )
+        return
+
+    reply = ask_claude(text)
     await update.message.reply_text(reply)
 
 
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Voice message handler. Whisper transcribes, then we route the same
+    way as text — looks-like-a-trade → log it; else → Claude Q&A."""
     await update.message.reply_chat_action("typing")
 
     voice = update.message.voice
@@ -109,6 +201,13 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             )
         text = transcription.text
         logger.info(f"Voice transcribed: {text[:80]}")
+
+        if looks_like_trade(text):
+            result = post_trade_to_os(text, message_id=update.message.message_id)
+            await update.message.reply_text(
+                format_trade_reply(result, text), parse_mode="Markdown"
+            )
+            return
 
         reply = ask_claude(text)
         await update.message.reply_text(f"🎙 _{text}_\n\n{reply}", parse_mode="Markdown")
