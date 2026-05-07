@@ -117,16 +117,17 @@ def post_trade_to_os(transcription: str, message_id: int | None = None) -> dict:
 
 
 def format_trade_reply(api_result: dict, transcription: str) -> str:
-    """Build Telegram reply from /api/voice/log-trade response."""
+    """Build Telegram reply from /api/voice/log-trade response.
+    NO Markdown — the original implementation used `_..._` italics around
+    the transcription which silently fails if the transcription contains
+    underscores or asterisks (Telegram returns 400 + bot reply never
+    posts). Plain text always works."""
     if api_result.get("ok"):
         summary = api_result.get("summary", "Trade logged.")
         url = api_result.get("detail_url", "")
-        return f"🎙 _{transcription}_\n\n{summary}\n{url}".strip()
+        return f"🎙 {transcription}\n\n{summary}\n{url}".strip()
     msg = api_result.get("message", "Couldn't log the trade.")
-    missing = api_result.get("missing")
-    if missing:
-        return f"🎙 _{transcription}_\n\n{msg}"
-    return f"🎙 _{transcription}_\n\n{msg}"
+    return f"🎙 {transcription}\n\n{msg}"
 
 
 @flask_app.route("/webhook", methods=["POST"])
@@ -163,28 +164,54 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Text message handler. Routes to trade-log if the text looks like
     a trade, otherwise falls back to plain Claude Q&A."""
-    await update.message.reply_chat_action("typing")
     text = update.message.text or ""
+    chat_id = update.effective_chat.id
+    is_trade = looks_like_trade(text)
+    logger.info(
+        f"[text] chat={chat_id} is_trade={is_trade} "
+        f"text={text[:80]!r}"
+    )
 
-    if looks_like_trade(text):
+    try:
+        await update.message.reply_chat_action("typing")
+    except Exception as e:
+        logger.warning(f"reply_chat_action failed: {e}")
+
+    if is_trade:
         # Strip leading /log if present
         clean = text
         if clean.lower().startswith("/log"):
             clean = clean[4:].strip()
+        logger.info(f"[text] routing to trade-log: {clean[:80]!r}")
         result = post_trade_to_os(clean, message_id=update.message.message_id)
-        await update.message.reply_text(
-            format_trade_reply(result, clean), parse_mode="Markdown"
-        )
+        logger.info(f"[text] trade-log result: ok={result.get('ok')} msg={result.get('message')!r}")
+        try:
+            await update.message.reply_text(format_trade_reply(result, clean))
+        except Exception as e:
+            logger.error(f"trade reply failed: {e}")
+            await update.message.reply_text(
+                f"Trade logged status: {result.get('message', 'unknown')}"
+            )
         return
 
-    reply = ask_claude(text)
-    await update.message.reply_text(reply)
+    try:
+        reply = ask_claude(text)
+        await update.message.reply_text(reply)
+    except Exception as e:
+        logger.error(f"claude reply failed: {e}")
+        await update.message.reply_text(f"Claude error: {e}")
 
 
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Voice message handler. Whisper transcribes, then we route the same
     way as text — looks-like-a-trade → log it; else → Claude Q&A."""
-    await update.message.reply_chat_action("typing")
+    chat_id = update.effective_chat.id
+    logger.info(f"[voice] chat={chat_id} received voice note")
+
+    try:
+        await update.message.reply_chat_action("typing")
+    except Exception as e:
+        logger.warning(f"reply_chat_action failed: {e}")
 
     voice = update.message.voice
     tg_file = await context.bot.get_file(voice.file_id)
@@ -200,17 +227,30 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                 file=audio,
             )
         text = transcription.text
-        logger.info(f"Voice transcribed: {text[:80]}")
+        is_trade = looks_like_trade(text)
+        logger.info(f"[voice] transcribed is_trade={is_trade} text={text[:80]!r}")
 
-        if looks_like_trade(text):
+        if is_trade:
             result = post_trade_to_os(text, message_id=update.message.message_id)
-            await update.message.reply_text(
-                format_trade_reply(result, text), parse_mode="Markdown"
-            )
+            logger.info(f"[voice] trade-log result: ok={result.get('ok')} msg={result.get('message')!r}")
+            try:
+                await update.message.reply_text(format_trade_reply(result, text))
+            except Exception as e:
+                logger.error(f"voice trade reply failed: {e}")
+                await update.message.reply_text(
+                    f"Trade logged status: {result.get('message', 'unknown')}"
+                )
             return
 
         reply = ask_claude(text)
-        await update.message.reply_text(f"🎙 _{text}_\n\n{reply}", parse_mode="Markdown")
+        # Plain text — Markdown can fail silently if transcription has _ or *
+        await update.message.reply_text(f"🎙 {text}\n\n{reply}")
+    except Exception as e:
+        logger.error(f"voice handler failed: {e}")
+        try:
+            await update.message.reply_text(f"Voice error: {e}")
+        except Exception:
+            pass
     finally:
         os.unlink(tmp_path)
 
