@@ -1,6 +1,12 @@
 python-telegram-bot==21.3
 flask==3.1.0
 anthropic==0.40.0
-openai==1.51.0
+# openai==1.51.0 broke May 2026 when httpx >= 0.28 dropped the `proxies`
+# parameter. Bumped to >=1.55.0 which fixed compat. Cap at <2.0.0 so a
+# major version bump doesn't surprise us.
+openai>=1.55.0,<2.0.0
 python-dotenv==1.0.1
+# Pin httpx alongside openai — keeps the deploy reproducible and prevents
+# the same break next time httpx ships another breaking change.
+httpx>=0.27,<0.29
 requests==2.32.3
