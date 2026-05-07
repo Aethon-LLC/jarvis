@@ -159,7 +159,20 @@ def format_trade_reply(api_result: dict, transcription: str) -> str:
     if api_result.get("ok"):
         summary = api_result.get("summary", "Trade logged.")
         url = api_result.get("detail_url", "")
-        return f"🎙 {transcription}\n\n{summary}\n{url}".strip()
+        # Unresolved names — heads-up the user about strategies / filters /
+        # accounts they referenced but don't have set up yet. Trade still
+        # logs (silent-drop is bad UX) but we tell the user what we couldn't
+        # find. They decide whether to create the missing entity.
+        unresolved = api_result.get("unresolved") or []
+        unresolved_line = ""
+        if unresolved:
+            parts = [f"{u.get('name', '?')} ({u.get('kind', '?')})" for u in unresolved]
+            unresolved_line = (
+                "\n\n⚠ Couldn't find: " + ", ".join(parts) +
+                ". Trade logged without those — create them in /strategies "
+                "or /strategies/filters and re-tag if you want."
+            )
+        return f"🎙 {transcription}\n\n{summary}\n{url}{unresolved_line}".strip()
     msg = api_result.get("message", "Couldn't log the trade.")
     return f"🎙 {transcription}\n\n{msg}"
 
@@ -232,6 +245,28 @@ HELP_TEXT = (
     "If you only say 'hit TP1' (no exit price), R falls back to your\n"
     "default targets (TP1=2R, TP2=3R). Per-user custom defaults coming\n"
     "in V1.1 settings.\n"
+    "\n"
+    "What's order-independent vs not:\n"
+    "  Word ORDER doesn't matter — say things in any sequence.\n"
+    "  POSITIONAL CUES still matter:\n"
+    "    'entry 5104 stop 5101' — entry is the first number, stop the\n"
+    "      second. Say which is which to be safe.\n"
+    "    'long' before or after the instrument is fine ('MES long' or\n"
+    "      'long MES').\n"
+    "    'on my X strategy' — strategy framing must precede or follow\n"
+    "      the strategy name closely. Just saying the name = confluence.\n"
+    "\n"
+    "Things you DON'T need to say (parser fills sensible defaults):\n"
+    "  trade_mode (defaults to your prop_firm_mode setting)\n"
+    "  contracts (left null if unstated — fine for analytics)\n"
+    "  conviction (left null — only set when you call it out)\n"
+    "  result (auto-derived from exit price if you said one)\n"
+    "  account (left null — V1.1 will let you say 'on Apex')\n"
+    "\n"
+    "If Jarvis can't find a strategy/filter/account you named, it'll\n"
+    "log the trade WITHOUT it and tell you (⚠ Couldn't find: CRT). That\n"
+    "means you don't have it set up yet — create it in /strategies and\n"
+    "re-tag the trade if you want.\n"
     "\n"
     "Force trade logging (skip detection): prefix 'log trade' or '/log'\n"
     "Plain Q&A: anything that isn't a trade — Jarvis just chats back."
