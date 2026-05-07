@@ -190,9 +190,49 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
         "👋 *Jarvis online.*\n\n"
         "TradingView alerts → Telegram ✓\n"
-        "Text or voice — ask me anything.",
+        "Text or voice — ask me anything.\n"
+        "Send /help to see how to log trades by voice or text.",
         parse_mode="Markdown",
     )
+
+
+# Voice/text trade-log quick reference. Plain text (no Markdown) so a
+# transcription with _ or * in a strategy name doesn't 400 the help reply.
+HELP_TEXT = (
+    "🎙 Voice + text trade logging\n"
+    "\n"
+    "Minimum to log a trade:\n"
+    "  instrument + direction + (entry OR stop)\n"
+    "  → e.g. 'MES long entry 5104 stop 5101'\n"
+    "\n"
+    "Add detail when you have it (any order, any wording):\n"
+    "  exit / target → 'out at 5108' or 'hit TP1' or 'stopped out'\n"
+    "  contracts    → '2 contracts' or 'one micro'\n"
+    "  conviction   → 'high conviction' / '5 stars' / 'shaky'\n"
+    "  mode         → 'eval account' / 'live' / 'sim' / 'replay'\n"
+    "  strategy     → name it: 'CRT setup' / 'sweep FVG' / 'discretionary'\n"
+    "  confluences  → 'with FVG and VWAP bounce'\n"
+    "  mistake      → 'mistake was early entry' (any losing trade)\n"
+    "  notes        → anything else you say lands in notes\n"
+    "\n"
+    "Examples that all work:\n"
+    "  'MES long 5104 stop 5101 hit TP1'\n"
+    "  'eval, MES short at 5118 stop 5121 took the loss, late entry'\n"
+    "  'long MGC 2425.5 stop 2424 hit TP2, sweep FVG, conviction 4'\n"
+    "  'discretionary scalp NQ short 21450 stop 21465 out at 21430'\n"
+    "  'scaled at first then runner went BE, MES long 5104 stop 5101'\n"
+    "\n"
+    "If you only say 'hit TP1' (no exit price), R falls back to your\n"
+    "default targets (TP1=2R, TP2=3R). Per-user custom defaults coming\n"
+    "in V1.1 settings.\n"
+    "\n"
+    "Force trade logging (skip detection): prefix 'log trade' or '/log'\n"
+    "Plain Q&A: anything that isn't a trade — Jarvis just chats back."
+)
+
+
+async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await update.message.reply_text(HELP_TEXT)
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -296,6 +336,7 @@ def main() -> None:
 
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("start", cmd_start))
+    app.add_handler(CommandHandler("help", cmd_help))
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
