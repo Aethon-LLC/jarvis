@@ -29,16 +29,32 @@ TRADING_OS_API = os.environ.get(
     "TRADING_OS_API", "https://usetradingos.com/api/voice/log-trade"
 )
 
+# Startup diagnostics — print whether the voice-trade env vars are actually
+# loaded so we can tell from the Coolify logs whether the issue is "var
+# missing" vs "var present but POST failing." Boolean-only — never log the
+# secret value itself.
+logger.info(
+    "Startup env check — "
+    f"JARVIS_WEBHOOK_SECRET set: {bool(JARVIS_WEBHOOK_SECRET)} · "
+    f"JARVIS_CLERK_USER_ID set: {bool(JARVIS_CLERK_USER_ID)} · "
+    f"TRADING_OS_API: {TRADING_OS_API}"
+)
+
 anthropic_client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 openai_client = OpenAI(api_key=OPENAI_API_KEY)
 
 flask_app = Flask(__name__)
 
 SYSTEM_PROMPT = (
-    "You are Jarvis, David Fischbarg's personal AI trading assistant on Telegram. "
-    "David trades MES futures on a TPT 150K prop firm evaluation. "
-    "Risk per trade: $400. TP1: 2R (50% off, stop to BE). TP2: 3R. Daily stop: -$800. "
-    "Answer concisely and directly. No disclaimers. No fluff."
+    "You are Jarvis, the user's personal AI trading assistant on Telegram. "
+    "Answer concisely and directly. No disclaimers. No fluff. "
+    "If the user asks about their stats / strategy / eval status, tell them "
+    "to check their Trading OS dashboard at usetradingos.com — you don't "
+    "have live read access to their data yet (V1.1). For trade logging, "
+    "they can speak or type a trade and you'll log it for them."
+    # V1.1: replace with dynamic per-user prompt pulled from
+    # /api/jarvis/context (returns user's app_mode, primary_asset_class,
+    # active eval rules, risk_per_trade, top strategies, etc.)
 )
 
 
